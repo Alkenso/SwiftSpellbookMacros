@@ -29,5 +29,7 @@ struct _SpellbookMacrosPlugin: CompilerPlugin {
         // StandardTypes:
         URLInitMacro.self,
         UUIDInitMacro.self,
+        
+        PatchingMacro.self,
     ]
 }

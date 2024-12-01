@@ -21,11 +21,19 @@
 //  SOFTWARE.
 
 import Foundation
+import SwiftSyntax
 
 internal struct TextError: Error, CustomStringConvertible {
     var description: String
     
     init(_ description: String) {
         self.description = description
+    }
+}
+
+extension StringLiteralExprSyntax {
+    internal var singleLiteral: String? {
+        guard segments.count == 1, case .stringSegment(let literalSegment) = segments.first else { return nil }
+        return literalSegment.content.text
     }
 }

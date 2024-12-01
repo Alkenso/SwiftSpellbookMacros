@@ -20,12 +20,11 @@
 //  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 //  SOFTWARE.
 
+import Foundation
 import SwiftCompilerPlugin
 import SwiftSyntax
 import SwiftSyntaxBuilder
 import SwiftSyntaxMacros
-
-import Foundation
 
 public enum URLInitMacro: ExpressionMacro {
     public static func expansion(
@@ -63,12 +62,5 @@ extension FreestandingMacroExpansionSyntax {
     fileprivate var argumentSingleStringLiteral: StringLiteralExprSyntax? {
         guard arguments.count == 1, additionalTrailingClosures.isEmpty else { return nil }
         return arguments.first?.expression.as(StringLiteralExprSyntax.self)
-    }
-}
-
-extension StringLiteralExprSyntax {
-    fileprivate var singleLiteral: String? {
-        guard segments.count == 1, case .stringSegment(let literalSegment) = segments.first else { return nil }
-        return literalSegment.content.text
     }
 }
