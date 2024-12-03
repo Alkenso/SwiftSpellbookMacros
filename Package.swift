@@ -11,10 +11,6 @@ let package = Package(
             name: "SpellbookMacros",
             targets: ["SpellbookMacros"]
         ),
-        .executable(
-            name: "SpellbookMacrosClient",
-            targets: ["SpellbookMacrosClient"]
-        ),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-syntax.git", from: "600.0.1"),
@@ -32,12 +28,14 @@ let package = Package(
             name: "SpellbookMacros",
             dependencies: ["_SpellbookMacros"]
         ),
-        .executableTarget(
-            name: "SpellbookMacrosClient",
-            dependencies: ["SpellbookMacros"]
-        ),
         .testTarget(
             name: "SpellbookMacrosTests",
+            dependencies: [
+                "SpellbookMacros",
+            ]
+        ),
+        .testTarget(
+            name: "SpellbookMacrosImplTests",
             dependencies: [
                 "_SpellbookMacros",
                 .product(name: "SwiftSyntaxMacrosTestSupport", package: "swift-syntax"),

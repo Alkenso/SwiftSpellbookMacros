@@ -32,247 +32,96 @@ public enum PatchingMacro: MemberMacro {
         guard let macroArguments = node.attributeName
             .as(IdentifierTypeSyntax.self)?.genericArgumentClause?.arguments, macroArguments.count == 1,
               let targetArgument = macroArguments.first?.argument,
-              let targetTypeName = targetArgument.as(IdentifierTypeSyntax.self)?.name else {
-            fatalError()
+              let targetType = targetArgument.as(IdentifierTypeSyntax.self)?.name else {
+            throw TextError("Failed to determine entity name to be extended")
+        }
+        guard case .argumentList(let arguments) = node.arguments else {
+            throw TextError("Invalid macro input")
         }
         
-        let description = try parse(node: node)
-        var modifiers = DeclModifierListSyntax()
-        if let visibility = description.visibility {
-            modifiers.append(DeclModifierSyntax(name: .keyword(visibility)))
+        let description = try parse(arguments: arguments)
+        if declaration.as(StructDeclSyntax.self) != nil {
+            guard description.mutatingApply else {
+                throw TextError("`mutatingApply` can be `false` only when patch is class")
+            }
+        } else if declaration.as(ClassDeclSyntax.self) != nil {
+            // pass.
+        } else {
+            throw TextError("Patch can only be struct or class")
         }
-        let patchStructMembers = description.properties.map {
-            VariableDeclSyntax(
-                modifiers: modifiers,
-                .var,
-                name: .init(stringLiteral: $0.name),
-                type: .init(type: OptionalTypeSyntax(
-                    wrappedType: IdentifierTypeSyntax(name: .identifier($0.type))
-                ))
-            )
+        
+        let access = description.visibility.flatMap { "\($0) " } ?? ""
+        
+        let members = description.properties.map { "\(access)var \($0.name): \($0.type)?" }.joined(separator: "\n")
+        
+        let memberInitArgs = description.properties.map { "\($0.name): \($0.type)? = nil" }.joined(separator: ",")
+        let memberInitImpl = description.properties.map { "self.\($0.name) = \($0.name)" }.joined(separator: "\n")
+        let memberInitFn = """
+        \(access)init(\(memberInitArgs)) {
+            \(memberInitImpl)
         }
-        var patchStructInitMembersParams = description.properties.map {
-            FunctionParameterSyntax(
-                firstName: .identifier($0.name),
-                type: OptionalTypeSyntax(wrappedType: IdentifierTypeSyntax(name: .identifier($0.type))),
-                defaultValue: InitializerClauseSyntax(value: NilLiteralExprSyntax()),
-                trailingComma: .commaToken(trailingTrivia: .space)
-            )
+        """
+        
+        let valueInitImpl = description.properties.map { "self.\($0.name) = value.\($0.keyPath)" }.joined(separator: "\n")
+        let valueInitFn = """
+        \(access)init(_ value: \(targetType)) {
+            \(valueInitImpl)
         }
-        patchStructInitMembersParams[patchStructInitMembersParams.count - 1].trailingComma = nil
-        let patchStructInitMembers = InitializerDeclSyntax(
-            modifiers: modifiers,
-            signature: FunctionSignatureSyntax(
-                parameterClause: FunctionParameterClauseSyntax(
-                    parameters: FunctionParameterListSyntax(patchStructInitMembersParams)
-                )
-            ),
-            body: CodeBlockSyntax(
-                statements: CodeBlockItemListSyntax(
-                    description.properties.map {
-                        .init(item: .expr(.init(SequenceExprSyntax(elements: ExprListSyntax([
-                            MemberAccessExprSyntax(
-                                base: DeclReferenceExprSyntax(baseName: .keyword(.`self`)),
-                                name: .identifier($0.name)
-                            ),
-                            AssignmentExprSyntax.init(equal: .equalToken()),
-                            DeclReferenceExprSyntax(baseName: .identifier($0.name))
-                        ])))))
-                    }
-                )
-            )
-        )
-        let patchStructInitParent = InitializerDeclSyntax(
-            modifiers: modifiers,
-            signature: FunctionSignatureSyntax(
-                parameterClause: FunctionParameterClauseSyntax(
-                    parameters: FunctionParameterListSyntax([
-                        FunctionParameterSyntax(
-                            firstName: .wildcardToken(),
-                            secondName: .identifier("value"),
-                            type: IdentifierTypeSyntax(name: targetTypeName)
-                        )
-                    ])
-                )
-            ),
-            body: CodeBlockSyntax(
-                statements: CodeBlockItemListSyntax(
-                    description.properties.map {
-                        CodeBlockItemSyntax(item: .expr(.init(SequenceExprSyntax(elements: ExprListSyntax([
-                            MemberAccessExprSyntax(
-                                base: DeclReferenceExprSyntax(baseName: .keyword(.`self`)),
-                                name: .identifier($0.name)
-                            ),
-                            AssignmentExprSyntax.init(equal: .equalToken()),
-                            MemberAccessExprSyntax(
-                                base: DeclReferenceExprSyntax(baseName: .identifier("value")),
-                                name: .identifier($0.keyPath)
-                            )
-                        ])))))
-                    }
-                )
-            )
-        )
-        let patchStructIsEmpty = VariableDeclSyntax(
-            modifiers: modifiers,
-            bindingSpecifier: .keyword(.var),
-            bindings: PatternBindingListSyntax([
-                PatternBindingSyntax(
-                    pattern: IdentifierPatternSyntax(identifier: .identifier("isEmpty")),
-                    typeAnnotation: TypeAnnotationSyntax(type: IdentifierTypeSyntax(name: .identifier("Bool"))),
-                    accessorBlock: AccessorBlockSyntax(accessors: .getter(CodeBlockItemListSyntax([
-                        CodeBlockItemSyntax(item: .expr(.init(SequenceExprSyntax(elements: ExprListSyntax(
-                            description.properties
-                                .map { DeclReferenceExprSyntax(baseName: .identifier($0.name)) }
-                                .map {
-                                    [
-                                        $0,
-                                        BinaryOperatorExprSyntax(operator: .binaryOperator("==")),
-                                        NilLiteralExprSyntax(),
-                                    ] as [ExprSyntaxProtocol]
-                                }
-                                .joined(separator: [BinaryOperatorExprSyntax(operator: .binaryOperator("&&"))])
-                                .map { $0 as ExprSyntaxProtocol }
-                        )))))
-                    ])))
-                )
-            ])
-        )
-        let patchStruct = StructDeclSyntax(
-            modifiers: modifiers,
-            name: .identifier(description.name),
-            memberBlock: MemberBlockSyntax(
-                members: MemberBlockItemListSyntax(
-                    patchStructMembers.map { MemberBlockItemSyntax(decl: $0) } + [
-                        MemberBlockItemSyntax(leadingTrivia: .newlines(2), decl: patchStructInitMembers),
-                        MemberBlockItemSyntax(leadingTrivia: .newlines(2), decl: patchStructInitParent),
-                        MemberBlockItemSyntax(leadingTrivia: .newlines(2), decl: patchStructIsEmpty),
-                    ]
-                )
-            )
-        )
-        var applyPatchFuncModifiers: DeclModifierListSyntax = modifiers
-        if description.mutatingApply {
-            applyPatchFuncModifiers.append(DeclModifierSyntax(name: .keyword(.mutating)))
+        """
+        
+        let isEmptyImpl = description.properties.map { "\($0.name) == nil" }.joined(separator: " && ")
+        let isEmptyFn = """
+        \(access)var isEmpty: Bool {
+            \(isEmptyImpl)
         }
-        let applyPatchFunc = FunctionDeclSyntax(
-            modifiers: applyPatchFuncModifiers,
-            name: .identifier("applyPatch"),
-            signature: FunctionSignatureSyntax(parameterClause: FunctionParameterClauseSyntax(
-                parameters: FunctionParameterListSyntax([
-                    FunctionParameterSyntax(
-                        firstName: .wildcardToken(),
-                        secondName: "patch",
-                        type: IdentifierTypeSyntax(name: .identifier(description.name))
-                    )
-                ])
-            )),
-            body: CodeBlockSyntax(statements: CodeBlockItemListSyntax(
-                description.properties.map {
-                    CodeBlockItemSyntax(item: .expr(.init(FunctionCallExprSyntax(
-                        calledExpression: MemberAccessExprSyntax(
-                            base: MemberAccessExprSyntax(
-                                base: DeclReferenceExprSyntax(baseName: .identifier("patch")),
-                                declName: DeclReferenceExprSyntax(baseName: .identifier($0.name))
-                            ),
-                            declName: DeclReferenceExprSyntax(baseName: .identifier("flatMap"))
-                        ),
-                        arguments: LabeledExprListSyntax(),
-                        trailingClosure: ClosureExprSyntax(statements: CodeBlockItemListSyntax([
-                            CodeBlockItemSyntax(item: .expr(.init(SequenceExprSyntax(elements: ExprListSyntax([
-                                DeclReferenceExprSyntax(baseName: .identifier($0.keyPath)),
-                                AssignmentExprSyntax(),
-                                DeclReferenceExprSyntax(baseName: .dollarIdentifier("$0"))
-                            ])))))
-                        ]))
-                    ))))
-                }
-            ))
-        )
-        let applyingPatchFunc = FunctionDeclSyntax(
-            modifiers: modifiers,
-            name: .identifier("applyingPatch"),
-            signature: FunctionSignatureSyntax(
-                parameterClause: FunctionParameterClauseSyntax(
-                    parameters: FunctionParameterListSyntax([
-                        FunctionParameterSyntax(
-                            firstName: .wildcardToken(),
-                            secondName: .identifier("patch"),
-                            type: IdentifierTypeSyntax(name: .identifier(description.name))
-                        )
-                    ])
-                ),
-                returnClause: ReturnClauseSyntax(type: IdentifierTypeSyntax(name: targetTypeName))
-            ),
-            body: CodeBlockSyntax(statements: CodeBlockItemListSyntax([
-                CodeBlockItemSyntax(item: .decl(.init(VariableDeclSyntax(
-                    bindingSpecifier: .keyword(.var),
-                    bindings: PatternBindingListSyntax([
-                        PatternBindingSyntax(
-                            pattern: IdentifierPatternSyntax(identifier: .identifier("copy")),
-                            initializer: InitializerClauseSyntax(value: DeclReferenceExprSyntax(baseName: .keyword(.`self`)))
-                        )
-                    ])
-                )))),
-                CodeBlockItemSyntax(item: .expr(.init(FunctionCallExprSyntax(
-                    calledExpression: MemberAccessExprSyntax(
-                        
-                        base: DeclReferenceExprSyntax(baseName: .identifier("copy")),
-                        declName: DeclReferenceExprSyntax(baseName: .identifier("applyPatch"))
-                    ),
-                    leftParen: .leftParenToken(),
-                    arguments: LabeledExprListSyntax([
-                        LabeledExprSyntax(expression: DeclReferenceExprSyntax(baseName: .identifier("patch")))
-                    ]),
-                    rightParen: .rightParenToken()
-                )))),
-                CodeBlockItemSyntax(item: .stmt(.init(ReturnStmtSyntax(expression: DeclReferenceExprSyntax(baseName: .identifier("copy"))))))
-            ]))
-        )
+        """
+        
+        let inoutSign = description.mutatingApply ? "inout " : ""
+        let applyImpl = description.properties.map { "\($0.name).flatMap { value.\($0.keyPath) = $0 }" }.joined(separator: "\n")
+        let applyFn = """
+        \(access)func apply(to value: \(inoutSign)\(targetType)) {
+            \(applyImpl)
+        }
+        """
+        
+        let refSign = description.mutatingApply ? "&" : ""
+        let applyingFn = """
+        \(access)func applying(to value: \(targetType)) -> \(targetType) {
+            var copy = value
+            apply(to: \(refSign)copy)
+            return copy
+        }
+        """
         
         return [
-            .init(patchStruct),
-            .init(applyPatchFunc),
-            .init(applyingPatchFunc),
+            "\(raw: members)",
+            "\(raw: memberInitFn)",
+            "\(raw: valueInitFn)",
+            "\(raw: isEmptyFn)",
+            "\(raw: applyFn)",
+            "\(raw: applyingFn)",
         ]
     }
     
-    private static func parse(node: AttributeSyntax) throws -> Description {
-        guard case .argumentList(let arguments) = node.arguments else {
-            fatalError()
-        }
-        
+    private static func parse(arguments: LabeledExprListSyntax) throws -> Description {
         var description = Description()
         for argument in arguments {
             switch argument.label?.text {
-            case "name":
-                guard let customName = argument.expression.as(StringLiteralExprSyntax.self)?.singleLiteral,
-                      !customName.isEmpty
-                else {
-                    fatalError()
-                }
-                description.name = customName
             case "visibility":
                 guard let customVisibility = argument.expression
                     .as(MemberAccessExprSyntax.self)?.declName.baseName.text,
                       !customVisibility.isEmpty
                 else {
-                    fatalError()
+                    throw TextError("`visibility` is invalid")
                 }
-                description.visibility = switch customVisibility {
-                case "public": .public
-                case "package": .package
-                case "internal": .internal
-                case "fileprivate": .fileprivate
-                case "none": nil
-                default: fatalError()
+                if customVisibility != "none" {
+                    description.visibility = customVisibility
                 }
             case "mutatingApply":
-                guard let mutatingApply = argument.expression
-                    .as(MemberAccessExprSyntax.self)?.declName.baseName.text,
-                      let mutatingApply = Bool(mutatingApply)
+                guard let mutatingApply = argument.expression.as(BooleanLiteralExprSyntax.self),
+                      let mutatingApply = Bool(mutatingApply.literal.text)
                 else {
-                    fatalError()
+                    throw TextError("`mutatingApply` is invalid")
                 }
                 description.mutatingApply = mutatingApply
             case .none:
@@ -280,22 +129,22 @@ public enum PatchingMacro: MemberMacro {
                       let calledExpression = memberExpression.calledExpression.as(MemberAccessExprSyntax.self),
                       calledExpression.declName.baseName.text == "member"
                 else {
-                    fatalError()
+                    throw TextError("`member` has invalid format")
                 }
                 guard let member = memberExpression.member else {
-                    fatalError()
+                    throw TextError("`member` contains forbidden parameters")
                 }
                 guard isValidSwiftIdentifier(member.name) else {
-                    fatalError()
+                    throw TextError("`member` name is invalid or empty")
                 }
                 description.properties.append(member)
             default:
-                fatalError()
+                throw TextError("Unexpected argument \(argument)")
             }
         }
         
         guard !description.properties.isEmpty else {
-            fatalError()
+            throw TextError("At least one member should be specified")
         }
         
         return description
@@ -303,8 +152,7 @@ public enum PatchingMacro: MemberMacro {
 }
 
 private struct Description {
-    var name = "Patch"
-    var visibility: Keyword?
+    var visibility: String?
     var mutatingApply = true
     var properties: [(name: String, keyPath: String, type: String)] = []
 }
@@ -312,17 +160,11 @@ private struct Description {
 extension FunctionCallExprSyntax {
     fileprivate var member: (name: String, keyPath: String, type: String)? {
         let expressions = arguments.map(\.expression)
-        guard expressions.count == 2 || expressions.count == 3 else { return nil }
+        guard expressions.count == 2 else { return nil }
         guard let type = expressions.last?.as(MemberAccessExprSyntax.self)?.base else { return nil }
-        guard let nameCompoments = expressions.first?.as(KeyPathExprSyntax.self)?.components else { return nil }
+        guard let nameCompoments = expressions.first?.as(KeyPathExprSyntax.self)?.components, nameCompoments.count == 1 else { return nil }
         
-        let name: String
-        if expressions.count == 3 {
-            guard let customName = expressions[1].as(StringLiteralExprSyntax.self)?.singleLiteral else { return nil }
-            name = customName
-        } else {
-            name = nameCompoments.map(\.component.description).joined(separator: "_")
-        }
+        let name = nameCompoments.map(\.component.description).joined(separator: "_")
         let keyPath = nameCompoments.map(\.component.description).joined(separator: ".")
         
         return (name, keyPath, type.description)

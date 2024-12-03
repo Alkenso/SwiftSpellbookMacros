@@ -11,19 +11,12 @@ public enum _PatchVisibility: Comparable {
 public struct _PatchMember<T> {
     public static func member<P>(
         _: KeyPath<T, P>,
-        _: StaticString,
-        _: P.Type
-    ) -> Self { .init() }
-    
-    public static func member<P>(
-        _: KeyPath<T, P>,
         _: P.Type
     ) -> Self { .init() }
 }
 
-@attached(member)
+@attached(member, names: arbitrary)
 public macro Patching<T>(
-    name: String = "Patch",
     visibility: _PatchVisibility = .none,
     mutatingApply: Bool = true,
     _: _PatchMember<T>,
